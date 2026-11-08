@@ -30,6 +30,10 @@ PRODUCT_PACKAGES += \
     android.hardware.security.keymint3-service.strongbox.nxp \
     android.hardware.weaver-service.nxp
 
+PRODUCT_SOONG_NAMESPACES += \
+    hardware/nxp/keymint/pixel \
+    hardware/nxp/weaver/pixel
+
 # LiveDisplay
 $(call soong_config_set_bool,OPLUS_LINEAGE_LIVEDISPLAY_HAL,ENABLE_SE,false)
 
