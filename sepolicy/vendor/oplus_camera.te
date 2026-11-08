@@ -1,0 +1,154 @@
+# OPlus stock camera - https://github.com/ynotzort/oplus-camera-waffle
+#
+# WHY EVERYTHING IS IN VENDOR POLICY
+# ----------------------------------
+# The camera app needs vendor types (vendor_xdsp_device, adsprpcd_file,
+# vendor_hal_offlinecamera_service, ...) which are declared in
+# device/qcom/sepolicy_vndr and are NOT visible from system_ext private policy.
+# Putting these rules in sepolicy/private/ fails the build outright:
+#
+#   device/oneplus/waffle/sepolicy/private/platform_app.te:32:
+#     ERROR 'unknown type vendor_xdsp_device'
+#   checkpolicy: error(s) encountered while parsing configuration
+#
+# They work here because `platform_app` is declared in
+# system/sepolicy/public/platform_app.te, so vendor policy CAN see it - no
+# attribute indirection needed.
+#
+# This is worth understanding before porting more of the KernelSU module's
+# rules in-tree: the module patches the *loaded, combined* policy with
+# magiskpolicy, where every type is visible and unknown types are skipped with
+# a warning. The build compiles each policy partition separately and a missing
+# type is a hard error. Several rules that are harmless in the module simply
+# cannot be expressed in-tree, and two of them named types that do not exist on
+# this tree at all (public_adsprpcd_file, proc_ufs_file) - dropped here.
+#
+# THE APP RUNS AS platform_app, NOT priv_app. Both APKs are signed with the
+# platform key so they get their signature-protected permissions;
+# seapp_contexts then matches on seinfo=platform and assigns platform_app.
+# Being in /system_ext/priv-app does not override that. Verified on device:
+#     u:r:platform_app:s0:c512,c768  com.oplus.camera
+#     u:r:system_app:s0              com.oplus.appplatform
+#
+# This is looser than it should be - it grants every platform-signed app what
+# only the camera needs. The reference port gives the app its own
+# `opluscamera_app` domain via seapp_contexts, which is the right answer and
+# the obvious follow-up. See docs/UPSTREAMING.md.
+
+# ---------------------------------------------------------------------------
+# THE REVERSE BINDER RULE. Without this, still capture saves no file.
+#
+# The APS still-capture path in /odm/lib64/libAlgoProcess.so opens an offline
+# session on the QTI offline-camera HAL and hands it an IOfflineCameraCallback
+# binder that lives in the APP. The HAL then calls AIBinder_associateClass on
+# it, which does an INTERFACE_TRANSACTION back into the app to read the
+# interface descriptor. Denied, that read returns nothing:
+#
+#   avc: denied { call } comm="binder:NNN_7"
+#        scontext=u:r:hal_camera_default:s0 tcontext=u:r:platform_app:s0:...
+#   libbinder.IPCThreadState: BR_FAILED_REPLY, error: -1 (Operation not permitted)
+#   associateClass: Expecting binder to have class
+#       '...IOfflineCameraCallback' but descriptor is actually ''.
+#   ChiOfflineAIDLSevice: 216 openOfflineSeesion: callback is null
+#   OfflineCameraClient.cpp: 391 openOfflineSession() ... '1: ILLEGAL_ARGUMENT'
+#
+# libAlgoProcess.so does not check that and calls configureOfflineStreams() on
+# the NULL session, so the RefFrameProcess thread takes a SIGSEGV at address 0
+# and the app dies mid-burst: shutter fires, 8-frame burst runs, a filename is
+# allocated, no file is ever written.
+#
+# GENERALISE THIS: any HAL that takes a callback object from an app needs the
+# reverse binder rule, because associateClass is a callback INTO the client
+# during what looks like a plain forward call. The signature is
+# `associateClass: ... but descriptor is actually ''` with a reverse-direction
+# avc denial immediately before it.
+allow hal_camera_default platform_app:binder { call transfer };
+allow hal_camera_default platform_app:fd use;
+
+# ---------------------------------------------------------------------------
+# The CameraUnit SDK dlopen()s /odm/lib64/libOplusSecurity.so to decrypt the
+# AES-encrypted APS configs, and /odm/lib64/libalog.so for logging. Both are
+# vendor_file. Without this the decrypt fails silently, every APS key falls
+# back to a hardcoded default, and com.oplus.capture.surface.decision.support
+# reads 0 instead of 1 - which makes raw_output and raw16_output collide on one
+# cached ImageReader, submits the same Surface twice, and AOSP rejects the
+# session:
+#     createStream: Surface already has a stream created for it (ID 1)
+#     onSessionConfigureFail 10002 "stream surface error"
+# -> the preview never starts. This rule is what makes the preview render.
+#
+# x_file_perms is only granted to apps on non-Treble builds
+# (system/sepolicy/private/app.te, not_full_treble), so it has to be explicit.
+allow platform_app vendor_file:file { read open getattr map execute };
+
+# FastRPC / cDSP - the ArcSoft and APS still-capture algorithms run on the DSP.
+#
+# The /dev/xdsp and /dev/qdsp nodes are DELIBERATELY ABSENT here, unlike in the
+# KernelSU module. QTI's own policy forbids them to any app domain outright:
+#
+#   device/qcom/sepolicy_vndr/sm8650/generic/vendor/common/domain.te:98
+#     neverallow { domain <a few vendor app domains, userdebug only> }
+#         vendor_xdsp_device:chr_file *;
+#
+# There is no violator attribute to opt out of that - the exemption list is
+# hardcoded domain names. Granting it needs a patch to device/qcom/sepolicy_vndr
+# adding the camera's domain, which is a good reason to give the app its own
+# `opluscamera_app` rather than exempting all of platform_app.
+#
+# It appears not to be needed: the module carries these rules speculatively and
+# no xdsp/qdsp denial was ever observed on device, including during captures
+# that exercise the DSP algorithms. The denials that were real are the
+# adsprpcd_file ones below.
+allow platform_app adsprpcd_file:dir { read open search getattr };
+# ImageProcessThr mmaps the DSP shell and its libc++ straight out of here.
+allow platform_app adsprpcd_file:file { read open getattr map };
+# It also sets inotify watches on every DSP search path it probes. Pure
+# discovery convenience - denying it changes nothing.
+dontaudit platform_app adsprpcd_file:dir watch;
+dontaudit platform_app vendor_file:dir watch;
+
+# Camera HAL and its services.
+#
+# The app talks to the camera HAL DIRECTLY, not only through cameraserver -
+# libAlgoProcess.so opens an offline session on
+# vendor.qti.hardware.camera.offlinecamera.IOfflineCameraService. So it has to
+# be a real hal_camera client, not just a domain with a couple of hand-written
+# allows. QTI declares that service with
+#
+#   hal_attribute_service(hal_camera, vendor_hal_offlinecamera_service)
+#     -> device/qcom/sepolicy_vndr/sm8650/generic/vendor/common/hal_camera.te:97
+#
+# whose neverallow restricts `find` to hal_camera_client. Granting it by hand
+# fails the build:
+#
+#   libsepol.report_failure: neverallow on line 97 of .../hal_camera.te violated
+#     by allow platform_app vendor_hal_offlinecamera_service:service_manager find;
+#
+# hal_client_domain() is the idiom: it makes platform_app a hal_camera_client
+# and supplies the binder_call to hal_camera_server, so the two hand-written
+# rules this replaces are no longer needed.
+hal_client_domain(platform_app, hal_camera)
+
+allow platform_app vendor_hal_qspmhal_default:binder { call transfer };
+dontaudit platform_app vendor_hal_qspmhal_service:service_manager find;
+
+# Vendor camera properties.
+#   vendor_camera_prop  - absent, the QTI vendor policy already does
+#                         get_prop(appdomain, vendor_camera_prop).
+#   vendor_default_prop - absent, enforce_sysprop_owner() /
+#                         treble_sysprop_neverallow() forbid it to any domain
+#                         and there is no violator attribute. No denial for it
+#                         was ever observed either.
+allow platform_app camera_config_prop:file { read open getattr map };
+
+# Vendor data used by the APS deferred-capture path.
+allow platform_app vendor_data_file:dir { read open search getattr write add_name remove_name create rename setattr rmdir };
+allow platform_app vendor_data_file:file { read open write create unlink getattr rename setattr };
+allow platform_app vendor_camera_update_data_file:dir { read open search getattr write add_name remove_name create rename setattr rmdir };
+allow platform_app vendor_camera_update_data_file:file { read open write create unlink getattr rename setattr };
+
+# Misc probes the stock app does.
+dontaudit platform_app debugfs_tracing:file { read write open getattr };
+dontaudit platform_app default_android_service:service_manager find;
+# PreviewReceived reads /sys/fs/selinux/enforce to decide how loudly to log.
+dontaudit platform_app selinuxfs:file { read open getattr };

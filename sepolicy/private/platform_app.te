@@ -1,0 +1,34 @@
+# OPlus stock camera - https://github.com/ynotzort/oplus-camera-waffle
+#
+# Most of the camera's rules live in ../vendor/oplus_camera.te - see that file
+# for why. This one carries the two things that can only be said here.
+
+# ---------------------------------------------------------------------------
+# NEVERALLOW OPT-OUTS. Without these the build fails, not the boot:
+#
+#   libsepol.report_failure: neverallow on line 2155 of
+#     system/sepolicy/private/domain.te violated by
+#     allow platform_app vendor_file:file { read getattr map execute open };
+#   libsepol.check_assertions: 11 neverallow failures occurred
+#
+# Full-Treble AOSP forbids a coredomain from reading or executing /vendor files
+# and from touching /data/vendor at all. `platform_app` is a coredomain. The
+# camera genuinely needs both: it dlopen()s /odm/lib64/libOplusSecurity.so and
+# libalog.so, mmaps the DSP shell out of adsprpcd_file, and the APS
+# deferred-capture path writes to vendor_data_file.
+#
+# AOSP provides exactly two escape hatches, both marked
+# "TODO(b/34980020) / TODO(b/37168747) remove once all violators are cleaned
+# up". Using them is an admission that this is a violator, which it is.
+#
+# THIS IS THE STRONGEST ARGUMENT FOR GIVING THE APP ITS OWN DOMAIN. As written,
+# every platform-signed app on the device becomes a violator. With an
+# `opluscamera_app` domain from seapp_contexts, only the camera would be.
+# See docs/UPSTREAMING.md.
+typeattribute platform_app system_executes_vendor_violators;
+typeattribute platform_app data_between_core_and_vendor_violators;
+
+# ---------------------------------------------------------------------------
+# default_prop is system_internal_prop(), so vendor policy cannot see it and
+# this rule cannot live alongside the others.
+dontaudit platform_app default_prop:file { read open getattr map };
