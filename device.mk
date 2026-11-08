@@ -94,3 +94,10 @@ $(call inherit-product, device/oneplus/sm8650-common/common.mk)
 
 # Inherit from the proprietary files makefile.
 $(call inherit-product, vendor/oneplus/waffle/waffle-vendor.mk)
+
+# Camera
+$(call soong_config_set,camera,allow_nonincreasing_timestamps,true)
+$(call soong_config_set_bool,camera,override_format_from_reserved,true)
+$(call soong_config_set,camera,package_name,com.oplus.packageName)
+
+$(call inherit-product-if-exists, device/oplus/camera/camera.mk)
