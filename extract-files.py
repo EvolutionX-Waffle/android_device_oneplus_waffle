@@ -4,6 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
+import os
+import subprocess
+import sys
+
 from extract_utils.fixups_blob import (
     blob_fixup,
     blob_fixups_user_type,
@@ -24,6 +28,16 @@ namespace_imports = [
     'vendor/oplus/camera',
     'vendor/qcom/opensource/commonsys-intf/display',
 ]
+
+
+def disable_camera_blur(ctx, file, file_path, *args, **kwargs):
+    # The shutter button blur needs com.oplus.graphics.OplusBlurParam,
+    # which is not in oplus-fwk.
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oplus_camera_config.py')
+    subprocess.run(
+        [sys.executable, script, file_path, 'com.oplus.camera.support.cross.window.blur=0'],
+        check=True,
+    )
 
 
 def lib_fixup_vendor_suffix(lib: str, partition: str, *args, **kwargs):
@@ -57,6 +71,8 @@ blob_fixups: blob_fixups_user_type = {
     'odm/etc/camera/CameraHWConfiguration.config': blob_fixup()
         # Expose AUX cameras
         .regex_replace('SystemCamera =  0;  0;  0;  1;  0; 1;', 'SystemCamera =  0;  0;  0;  0;  0; 0;'),
+    'odm/etc/camera/config/oplus_camera_config': blob_fixup()
+        .call(disable_camera_blur),
     (
         'odm/lib64/camera/components/com.oplus.node.mvgsat.so',
         'odm/lib64/camera/components/com.oplus.node.sstabphoto.so',
