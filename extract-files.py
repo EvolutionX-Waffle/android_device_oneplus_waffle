@@ -21,6 +21,7 @@ namespace_imports = [
     'hardware/oplus',
     'hardware/qcom-caf/sm8650',
     'vendor/oneplus/sm8650-common',
+    'vendor/oplus/camera',
     'vendor/qcom/opensource/commonsys-intf/display',
 ]
 
@@ -56,6 +57,17 @@ blob_fixups: blob_fixups_user_type = {
     'odm/etc/camera/CameraHWConfiguration.config': blob_fixup()
         # Expose AUX cameras
         .regex_replace('SystemCamera =  0;  0;  0;  1;  0; 1;', 'SystemCamera =  0;  0;  0;  0;  0; 0;'),
+    (
+        'odm/lib64/camera/components/com.oplus.node.mvgsat.so',
+        'odm/lib64/camera/components/com.oplus.node.sstabphoto.so',
+        'odm/lib64/hw/camera.oemlayer.so',
+        'odm/lib64/libEIS.so',
+        'odm/lib64/libEISLive.so',
+        'odm/lib64/libHIS.so',
+        'odm/lib64/libmvgcommon.so',
+        'odm/lib64/libsharebuffer_impl.so',
+    ): blob_fixup()
+        .replace_needed('libui.so', 'oemui.so'),
     (
         'odm/etc/libnfc-mtp-SN220.conf_22825',
         'odm/etc/libnfc-mtp-SN220.conf_22877',
