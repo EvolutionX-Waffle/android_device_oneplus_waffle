@@ -127,7 +127,12 @@ dontaudit platform_app vendor_file:dir watch;
 # hal_client_domain() is the idiom: it makes platform_app a hal_camera_client
 # and supplies the binder_call to hal_camera_server, so the two hand-written
 # rules this replaces are no longer needed.
-hal_client_domain(platform_app, hal_camera)
+# hal_client_domain() minus its passthrough fallback, which also makes the
+# client a hal_camera and breaks the recovery policy neverallows.
+typeattribute platform_app halclientdomain;
+typeattribute platform_app hal_camera_client;
+allow platform_app hal_camera:memfd_file { read write getattr map };
+allow hal_camera platform_app:memfd_file { read write getattr map };
 
 allow platform_app vendor_hal_qspmhal_default:binder { call transfer };
 dontaudit platform_app vendor_hal_qspmhal_service:service_manager find;
